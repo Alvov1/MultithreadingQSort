@@ -2,6 +2,7 @@
 #include <fstream>
 #include <windows.h>
 #include <vector>
+#include <algorithm>
 
 unsigned threadAmount = 0;
 HANDLE* Threads;
@@ -57,20 +58,21 @@ void vectorDelete(std::vector<T>* array){
     array->shrink_to_fit();
 }
 /* ------------------------------------------------------------------------------------------------------------------ */
-void quickSort(std::vector<int>::iterator start, std::vector<int>::iterator end){   /* end - итератор на последний элемент, не на после последнего!! */
-    if(start < end){
-        auto pivot = *end;
-        auto median = start;
-        for(auto j = start; j < end; j++)
-            if(*j <= pivot)
-                std::iter_swap(median++, j);
-
-        std::iter_swap(median, end);
-
-        if(median > start)
-            quickSort(start, median - 1);
-        quickSort(median + 1, end);
-    }
+template <typename RandomIt>
+void QuickSort(RandomIt first, RandomIt last)
+{
+    if (std::distance(first, last) > 1){
+            auto pivot = std::prev(last, 1);
+            auto bound = first;
+            for (auto j = first; j != pivot; ++j){
+                if (*j < *pivot){
+                    std::swap(*bound++, *j);
+                }
+            }
+            std::swap(*bound, *pivot);
+            QuickSort(first, bound);
+            QuickSort(bound+1, last);
+        }
 }
 /* ------------------------------------------------------------------------------------------------------------------ */
 class SubarrayData {
@@ -78,35 +80,63 @@ public:
 
     void append(const int value){
         WaitForSingleObject(Mutex,INFINITE);
-        array->push_back(value);
+        array.push_back(value);
+        ReleaseMutex(Mutex);
+    }
+
+    void appendMultiple(std::vector<int>::iterator start,
+                        std::vector<int>::iterator end,
+                        const int rightBorder,
+                        const int leftBorder){
+        WaitForSingleObject(Mutex, INFINITE);
+        for(auto iter = start; iter != end; iter++)
+            if(*iter <= rightBorder && *iter > leftBorder)
+                array.push_back(*iter);
+        ReleaseMutex(Mutex);
+    }
+
+    void appendMultipleLess(std::vector<int>::iterator start,
+                            std::vector<int>::iterator end,
+                            const int rightBorder){
+        WaitForSingleObject(Mutex, INFINITE);
+        for(auto iter = start; iter != end; iter++)
+            if(*iter <= rightBorder)
+                array.push_back(*iter);
+        ReleaseMutex(Mutex);
+    }
+
+    void appendMultipleGreater(std::vector<int>::iterator start,
+                               std::vector<int>::iterator end,
+                               const int leftBorder){
+        WaitForSingleObject(Mutex, INFINITE);
+        for(auto iter = start; iter != end; iter++)
+            if(*iter > leftBorder)
+                array.push_back(*iter);
         ReleaseMutex(Mutex);
     }
 
     void sort(){
-        WaitForSingleObject(Mutex, INFINITE);
-        quickSort(array->begin(), array->end() - 1);
-        ReleaseMutex(Mutex);
+        std::sort(array.begin(), array.end());
     }
 
+
     void writeResults(std::ofstream &output){
-        for(int i = 0; i < array->size(); i++)
-            output << (*array)[i] << " ";
+        for(int i = 0; i < array.size(); i++)
+            output << array[i] << " ";
     }
 
     SubarrayData(){
-        array = new std::vector<int>;
-        array->reserve(numbersPerThread + 1);
+        array.reserve(numbersPerThread / 2 * 3);
         Mutex = CreateMutexA(nullptr, false, nullptr);
     }
     ~SubarrayData(){
         CloseHandle(Mutex);
-        array->clear();
-        array->shrink_to_fit();
-        delete array;
+        array.clear();
+        array.shrink_to_fit();
     }
 
 private:
-    std::vector<int>* array;
+    std::vector<int> array;
     HANDLE Mutex;
 };
 std::vector<SubarrayData*> Subarrays;
@@ -130,7 +160,7 @@ int readArguments(const std::string &filename = "input.txt"){
 void writeWithThreads(const std::string &outputName = "output.txt", const std::string &timeName = "time.txt"){
     std::ofstream output(outputName);
     output << threadAmount << std::endl << numbersAmount << std::endl;
-    for(auto i = 0; i < threadAmount; i++){
+    for(auto i = 0; i < Subarrays.size(); i++){
         Subarrays[i]->writeResults(output);
     }
     output.close();
@@ -138,7 +168,6 @@ void writeWithThreads(const std::string &outputName = "output.txt", const std::s
     std::ofstream time(timeName);
     time << timeSpent;
     time.close();
-    std::cout << "Time - " << timeSpent << std::endl;
 }
 void writeSimple(const std::string &outputName = "output.txt", const std::string &timeName = "time.txt"){
     std::ofstream output(outputName);
@@ -150,7 +179,6 @@ void writeSimple(const std::string &outputName = "output.txt", const std::string
     std::ofstream time(timeName);
     time << timeSpent;
     time.close();
-    std::cout << "Time - " << timeSpent << std::endl;
 }
 /* ------------------------------------------------------------------------------------------------------------------ */
 
@@ -189,6 +217,7 @@ void prepareData(){
     }
     borders.reserve(threadAmount + 1);
 }
+
 void deleteData(){
     vectorDelete(&SupportArray);
     vectorDelete(&borders);
@@ -206,6 +235,7 @@ void deleteData(){
     delete threadsEvents;
     CloseHandle(mainThreadEvent);
 }
+
 DWORD WINAPI thread_entry(void* param) {
     /* ------------------------------------------------------------ */
     auto subarrayInfo = (sortingData*) param;
@@ -219,7 +249,8 @@ DWORD WINAPI thread_entry(void* param) {
     std::advance(subarrayEnd,subarraySize + subarrayInfo->giveFirstElem());
 
     if(subarrayEnd > subarrayStart)
-        quickSort(subarrayStart, subarrayEnd - 1); /* subarrayEnd - элемент за последним. Его не включаем в сортировку */
+//        QuickSort(subarrayStart, subarrayEnd);
+        std::sort(subarrayStart, subarrayEnd);
 
     const unsigned division = threadAmount * threadAmount;
     /* Заполняем вспомогательный массив элементами-разделителями */
@@ -249,18 +280,13 @@ DWORD WINAPI thread_entry(void* param) {
 
     /* Элементы, меньше первого разделителя,
      * элементы больше последнего разделителя */
-    for(auto elem = subarrayStart; elem < subarrayEnd; elem++) {
-        if (*elem <= borders[0])
-            Subarrays[0]->append(*elem);
-        if (*elem > *borders.rbegin())
-            Subarrays[borders.size()]->append(*elem);
-    }
+
+    Subarrays[0]->appendMultipleLess(subarrayStart, subarrayEnd, borders[0]);
+    Subarrays[borders.size() - 1]->appendMultipleGreater(subarrayStart, subarrayEnd, *borders.rbegin());
 
     /* Элементы, между несколькими разделителями */
     for(unsigned i = 1; i < borders.size(); i++)
-        for(auto elem = subarrayStart; elem != subarrayEnd; elem++)
-            if(*elem <= borders[i] && *elem > borders[i - 1])
-                Subarrays[i]->append(*elem);
+        Subarrays[i]->appendMultiple(subarrayStart, subarrayEnd, borders[i], borders[i - 1]);
 
     /* Поток сделал свою работу */
     SetEvent(threadsEvents[threadNumber]);
@@ -274,6 +300,7 @@ DWORD WINAPI thread_entry(void* param) {
     SetEvent(threadsEvents[threadNumber]);
     return 0;
 }
+
 int threadsCreate(){
 
     Threads = new HANDLE[threadAmount];
@@ -292,22 +319,21 @@ int threadsCreate(){
     ResetMultipleEvents(threadsEvents, threadAmount);
 
     /* Сортируем вспомогательный массив */
-    quickSort(SupportArray.begin(), SupportArray.end() - 1);
+//    QuickSort(SupportArray.begin(), SupportArray.end());
+    std::sort(std::begin(SupportArray), std::end(SupportArray));
 
     /* Собираем множество разделителей */
     for(unsigned i = 1; i * threadAmount + threadAmount / 2 - 1 < SupportArray.size(); i++)
         borders.push_back(*(SupportArray.begin() + i * threadAmount + threadAmount / 2 - 1));
 
-    SetEvent(mainThreadEvent);
-    ResetEvent(mainThreadEvent);
+    PulseEvent(mainThreadEvent);
 
     /* Ждем пока все потоки сделают необходимые действия */
     WaitForMultipleObjects(threadAmount, threadsEvents, true, INFINITE);
     ResetMultipleEvents(threadsEvents, threadAmount);
 
     /* Каждый поток распределил свои элементы между подмассивами */
-    SetEvent(mainThreadEvent);
-    ResetEvent(mainThreadEvent);
+    PulseEvent(mainThreadEvent);
 
     WaitForMultipleObjects(threadAmount, threadsEvents, true, INFINITE);
     return 0;
@@ -316,10 +342,14 @@ int threadsCreate(){
 /* Реализован алгоритм, описанный в этой статье:
  * https://neerc.ifmo.ru/wiki/index.php?title=PSRS-сортировка. */
 
+void stdOutTime(){
+    std::cout << "Time - " << timeSpent << "ms, " << (double) timeSpent / 1000 << " seconds" << std::endl;
+}
+
 int main(const int argc, const char** argv) {
     if(argc == 2) {
-        const std::string filename(argv[1]);
-        std::cout << "File - " << filename << std::endl;
+        std::string filename(argv[1]);
+        std::cout << "File - " << filename.c_str() << std::endl;
         if(readArguments(filename) == -1)
             return -1;
     } else
@@ -337,8 +367,12 @@ int main(const int argc, const char** argv) {
      *
      * Если число потоков >= размеру массива, также нет смысла создавать потоки,
      * потому что каждый тогда будет сортировать один элемент массива. */
+
     if(threadAmount == 1 || threadAmount >= numbersAmount){
-        quickSort(Numbers.begin(), Numbers.end() - 1);
+        timeBefore = GetTickCount();
+        QuickSort(std::begin(Numbers), std::end(Numbers));
+        timeSpent = GetTickCount() - timeBefore;
+        stdOutTime();
         writeSimple();
     } else {
         prepareData();
@@ -349,6 +383,7 @@ int main(const int argc, const char** argv) {
 
         timeSpent = GetTickCount() - timeBefore;
         /* ----------------------------------- */
+        stdOutTime();
         writeWithThreads();
         deleteData();
     }
